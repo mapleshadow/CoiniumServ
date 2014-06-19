@@ -33,6 +33,7 @@ namespace Coinium.Coin.Helpers
         /// <remarks>
         /// https://en.bitcoin.it/wiki/Protocol_specification#block
         /// </remarks>
+        /// <param name="job"></param>
         /// <param name="header"></param>
         /// <param name="coinbase"></param>
         /// <returns></returns>
@@ -83,7 +84,7 @@ namespace Coinium.Coin.Helpers
                 stream.WriteValueU32(Convert.ToUInt32(job.NetworkDifficulty, 16));
                 stream.WriteValueU32(nTime);
                 stream.WriteBytes(merkleRoot);
-                stream.WriteBytes(job.PreviousBlockHash.HexToByteArray());
+                stream.WriteBytes(job.PreviousBlockHashReversed.HexToByteArray());
                 stream.WriteValueU32(job.BlockTemplate.Version.BigEndian());
 
                 result = stream.ToArray();

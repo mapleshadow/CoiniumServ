@@ -17,111 +17,155 @@
 */
 
 using System;
-using System.IO;
 using System.Linq;
 using Coinium.Coin.Daemon;
 using Coinium.Coin.Daemon.Responses;
 using Coinium.Common.Extensions;
 using Coinium.Mining.Jobs;
 using Coinium.Transactions;
-using Coinium.Transactions.Coinbase;
-using Gibbed.IO;
+using Coinium.Transactions.Script;
 using Newtonsoft.Json;
 using NSubstitute;
 using Should.Fluent;
 using Xunit;
 
+/*  sample data
+    -- create-generation start --
+    rpcData: {"version":2,"previousblockhash":"e9bbcc9b46ed98fd4850f2d21e85566defdefad3453460caabc7a635fc5a1261","transactions":[],"coinbaseaux":{"flags":"062f503253482f"},"coinbasevalue":5000000000,"target":"0000004701b20000000000000000000000000000000000000000000000000000","mintime":1402660580,"mutable":["time","transactions","prevblock"],"noncerange":"00000000ffffffff","sigoplimit":20000,"sizelimit":1000000,"curtime":1402661060,"bits":"1d4701b2","height":302526}
+    -- scriptSigPart data --
+    -> height: 302526 serialized: 03be9d04
+    -> coinbase: 062f503253482f hex: 062f503253482f
+    -> date: 1402661059432 final:1402661059 serialized: 04c3e89a53
+    -- p1 data --
+    txVersion: 1 packed: 01000000
+    txInputsCount: 1 varIntBuffer: 01
+    txInPrevOutHash: 0 uint256BufferFromHash: 0000000000000000000000000000000000000000000000000000000000000000
+    txInPrevOutIndex: 4294967295 packUInt32LE: ffffffff
+    scriptSigPart1.length: 17 extraNoncePlaceholder.length:8 scriptSigPart2.length:14 all: 39 varIntBuffer: 27
+    scriptSigPart1: 03be9d04062f503253482f04c3e89a5308
+    p1: 01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff2703be9d04062f503253482f04c3e89a5308
+    -- generateOutputTransactions --
+    block-reward: 5000000000
+    recipient-reward: 50000000 packInt64LE: 80f0fa0200000000
+    lenght: 25 varIntBuffer: 19
+    script: 76a9147d576fbfca48b899dc750167dd2a2a6572fff49588ac
+    pool-reward: 4950000000 packInt64LE: 80010b2701000000
+    lenght: 25 varIntBuffer: 19
+    script: 76a914329035234168b8da5af106ceb20560401236849888ac
+    txOutputBuffers.lenght : 2 varIntBuffer: 02
+    -- p2 --
+    scriptSigPart2: 0d2f6e6f64655374726174756d2f
+    txInSequence: 0 packUInt32LE: 00000000
+    outputTransactions: 0280010b27010000001976a914329035234168b8da5af106ceb20560401236849888ac80f0fa02000000001976a9147d576fbfca48b899dc750167dd2a2a6572fff49588ac
+    txLockTime: 0 packUInt32LE: 00000000
+    txComment: 
+    p2: 0d2f6e6f64655374726174756d2f000000000280010b27010000001976a914329035234168b8da5af106ceb20560401236849888ac80f0fa02000000001976a9147d576fbfca48b899dc750167dd2a2a6572fff49588ac00000000
+*/
+
 namespace Tests.Transactions
 {
     public class GenerationTransactionTests
     {
+        // object mocks.
+        private readonly IDaemonClient _daemonClient;
+        private readonly IBlockTemplate _blockTemplate;
+        private readonly IExtraNonce _extraNonce;
+        private readonly ISignatureScript _signatureScript;
+        private readonly IOutputs _outputs;
+
+        public GenerationTransactionTests()
+        {
+            // daemon client
+            _daemonClient = Substitute.For<IDaemonClient>();
+            _daemonClient.ValidateAddress(Arg.Any<string>()).Returns(new ValidateAddress { IsValid = true });
+
+            // block template
+            const string json = "{\"result\":{\"version\":2,\"previousblockhash\":\"e9bbcc9b46ed98fd4850f2d21e85566defdefad3453460caabc7a635fc5a1261\",\"transactions\":[],\"coinbaseaux\":{\"flags\":\"062f503253482f\"},\"coinbasevalue\":5000000000,\"target\":\"0000004701b20000000000000000000000000000000000000000000000000000\",\"mintime\":1402660580,\"mutable\":[\"time\",\"transactions\",\"prevblock\"],\"noncerange\":\"00000000ffffffff\",\"sigoplimit\":20000,\"sizelimit\":1000000,\"curtime\":1402661060,\"bits\":\"1d4701b2\",\"height\":302526},\"error\":null,\"id\":1}";
+            var @object = JsonConvert.DeserializeObject<DaemonResponse<BlockTemplate>>(json);
+            _blockTemplate = @object.Result;
+
+            // extra nonce
+            _extraNonce = new ExtraNonce(0);
+
+            // signature script
+            _signatureScript = new SignatureScript(
+                _blockTemplate.Height,
+                _blockTemplate.CoinBaseAux.Flags,
+                1402661059432,
+                (byte)_extraNonce.ExtraNoncePlaceholder.Length,
+                "/nodeStratum/");
+
+            // use the same output data within our sample data.
+            _outputs = new Outputs(_daemonClient);
+            double blockReward = 5000000000; // the amount rewarded by the block.
+
+            // sample recipient
+            const string recipient = "mrwhWEDnU6dUtHZJ2oBswTpEdbBHgYiMji";
+            var amount = blockReward * 0.01;
+            blockReward -= amount;
+            _outputs.AddRecipient(recipient, amount);
+
+            // sample pool wallet
+            const string poolWallet = "mk8JqN1kNWju8o3DXEijiJyn7iqkwktAWq";
+            _outputs.AddPool(poolWallet, blockReward);
+        }
+
         [Fact]
         public void CreateGenerationTransactionTest()
         {
-            /* expected data
-                -- create-generation start --
-                rpcData: {"version":2,"previousblockhash":"f5f50aa8da33bde3805fe2a56b5f5ab82a2c0ce8597ef97a0abd8348d33ef1b6","transactions":[],"coinbaseaux":{"flags":"062f503253482f"},"coinbasevalue":5000000000,"target":"00000fffff000000000000000000000000000000000000000000000000000000","mintime":1402264399,"mutable":["time","transactions","prevblock"],"noncerange":"00000000ffffffff","sigoplimit":20000,"sizelimit":1000000,"curtime":1402265776,"bits":"1e0fffff","height":294740}
-                -- scriptSigPart data --
-                -> height: 294740 serialized: 03547f04
-                -> coinbase: 062f503253482f hex: 062f503253482f
-                -> date: 1402265775319 final:1402265775 serialized: 04afe09453
-                scriptSigPart1: 03547f04062f503253482f04afe0945308
-                scriptSigPart2: /nodeStratum/ serialized: 0d2f6e6f64655374726174756d2f
-                -- p1 data --
-                txVersion: 1 packed: 01000000*/
+            // create the test object.
+            var generationTransaction = new GenerationTransaction(_extraNonce, _daemonClient, _blockTemplate);
 
-            // block template json
-            const string json = "{\"result\":{\"version\":2,\"previousblockhash\":\"f5f50aa8da33bde3805fe2a56b5f5ab82a2c0ce8597ef97a0abd8348d33ef1b6\",\"transactions\":[],\"coinbaseaux\":{\"flags\":\"062f503253482f\"},\"coinbasevalue\":5000000000,\"target\":\"00000fffff000000000000000000000000000000000000000000000000000000\",\"mintime\":1402264399,\"mutable\":[\"time\",\"transactions\",\"prevblock\"],\"noncerange\":\"00000000ffffffff\",\"sigoplimit\":20000,\"sizelimit\":1000000,\"curtime\":1402265776,\"bits\":\"1e0fffff\",\"height\":294740},\"error\":null,\"id\":1}";
+            // use the exactly same input script data within our sample data.
+            generationTransaction.Inputs.First().SignatureScript = _signatureScript;
+            generationTransaction.Outputs = _outputs;
 
-            // now init blocktemplate from our json.
-            var @object = JsonConvert.DeserializeObject<DaemonResponse<BlockTemplate>>(json);
-            var blockTemplate = @object.Result;
+            // create the transaction
+            generationTransaction.Create();
 
-            // init mockup objects
-            var daemonClient = Substitute.For<IDaemonClient>();
-            var addressValidation = new ValidateAddress
-            {
-                IsValid = true
-            };
-            daemonClient.ValidateAddress("n3Mvrshbf4fMoHzWZkDVbhhx4BLZCcU9oY").Returns(addressValidation);
-            daemonClient.ValidateAddress("myxWybbhUkGzGF7yaf2QVNx3hh3HWTya5t").Returns(addressValidation);
+            // test version.
+            generationTransaction.Version.Should().Equal((UInt32)1);
+            generationTransaction.Initial.Take(4).ToHexString().Should().Equal("01000000");
 
-            // start testing internal structures.
+            // test inputs count.
+            generationTransaction.InputsCount.Should().Equal((UInt32)1);
+            generationTransaction.Initial.Skip(4).Take(1).Should().Equal(new byte[] { 0x01 }); 
 
-            var extraNonce = new ExtraNonce(0);
+            // test the input previous-output hash
+            generationTransaction.Initial.Skip(5).Take(32).ToHexString().Should().Equal("0000000000000000000000000000000000000000000000000000000000000000");
 
-            // test serialized block height.
-            var serializedBlockHeight = CoinbaseUtils.SerializeNumber(blockTemplate.Height);
-            serializedBlockHeight.Should().Equal(new byte[] {0x03, 0x54, 0x7f, 0x04});
+            // test the input previous-output index
+            generationTransaction.Inputs.First().PreviousOutput.Index.Should().Equal(0xffffffff);
+            generationTransaction.Initial.Skip(37).Take(4).ToHexString().Should().Equal("ffffffff");
 
-            // test coinbase flags
-            blockTemplate.CoinBaseAux.Flags.Should().Equal("062f503253482f");
+            // test the lenghts byte
+            generationTransaction.Inputs.First().SignatureScript.Initial.Length.Should().Equal(17);
+            _extraNonce.ExtraNoncePlaceholder.Length.Should().Equal(8);
+            generationTransaction.Inputs.First().SignatureScript.Final.Length.Should().Equal(14);
+            generationTransaction.Initial.Skip(41).Take(1).ToHexString().Should().Equal("27");
 
-            // test the exact date for the case.
-            const long unixDateTime = 1402265775319;
-            const long finalUnixDateTime = unixDateTime/1000 | 0;
-            finalUnixDateTime.Should().Equal((Int64)1402265775);
-            var serializedUnixTime = CoinbaseUtils.SerializeNumber(finalUnixDateTime);
-            serializedUnixTime.Should().Equal(new byte[] { 0x04, 0xaf, 0xe0, 0x94, 0x53 });
+            // test the signature script initial
+            generationTransaction.Initial.Skip(42).Take(17).ToHexString().Should().Equal("03be9d04062f503253482f04c3e89a5308");
+            
+            // test the signature script final
+            generationTransaction.Final.Take(14).ToHexString().Should().Equal("0d2f6e6f64655374726174756d2f");
 
-            // test sig-script part 1
-            var txIn = new TxIn();
-            txIn.SignatureScriptPart1 = txIn.SignatureScriptPart1.Concat(serializedBlockHeight).ToArray();
-            txIn.SignatureScriptPart1 = txIn.SignatureScriptPart1.Concat(blockTemplate.CoinBaseAux.Flags.HexToByteArray()).ToArray();
-            txIn.SignatureScriptPart1 = txIn.SignatureScriptPart1.Concat(serializedUnixTime).ToArray();
-            txIn.SignatureScriptPart1 = txIn.SignatureScriptPart1.Concat(new[] { (byte)extraNonce.ExtraNoncePlaceholder.Length }).ToArray();
-            txIn.SignatureScriptPart1.Should().Equal(new byte[] {0x03, 0x54, 0x7f, 0x04, 0x06, 0x2f, 0x50, 0x32, 0x53, 0x48, 0x2f, 0x04, 0xaf, 0xe0, 0x94, 0x53, 0x08});
+            // test the inputs sequence
+            generationTransaction.Inputs.First().Sequence.Should().Equal((UInt32)0x00);
+            generationTransaction.Final.Skip(14).Take(4).ToHexString().Should().Equal("00000000");
 
-            txIn.SignatureScriptPart2 = CoinbaseUtils.SerializeString("/nodeStratum/");
-            txIn.SignatureScriptPart2.Should().Equal(new byte[] {0x0d,0x2f,0x6e,0x6f,0x64,0x65,0x53,0x74,0x72,0x61,0x74,0x75,0x6d,0x2f});
+            // test the outputs buffer
+            generationTransaction.Final.Skip(18).Take(69).ToHexString().Should().Equal("0280010b27010000001976a914329035234168b8da5af106ceb20560401236849888ac80f0fa02000000001976a9147d576fbfca48b899dc750167dd2a2a6572fff49588ac");
 
-            // test the part 1
-            const uint txVersion = 1;
+            // test the lock time
+            generationTransaction.LockTime.Should().Equal((UInt32)0x00);
+            generationTransaction.Final.Skip(87).Take(4).ToHexString().Should().Equal("00000000");
 
-            // create the first part.
+            // test the generation transaction initial part.
+            generationTransaction.Initial.ToHexString().Should().Equal("01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff2703be9d04062f503253482f04c3e89a5308");
 
-            byte[] part1;
-            using (var stream = new MemoryStream())
-            {
-                stream.WriteValueU32(txVersion.LittleEndian()); // write version
-
-                // for proof-of-stake coins we need here timestamp - https://github.com/zone117x/node-stratum-pool/blob/b24151729d77e0439e092fe3a1cdbba71ca5d12e/lib/transactions.js#L210
-
-                // write transaction input.
-                //stream.WriteBytes(CoinbaseUtils.VarInt(this.InputsCount));
-                //stream.WriteBytes(this.Inputs[0].PreviousOutput.Hash.Bytes);
-                //stream.WriteValueU32(this.Inputs[0].PreviousOutput.Index.LittleEndian());
-
-                //// write signnature script lenght
-                //var signatureScriptLenght = (UInt32)(input.SignatureScriptPart1.Length + extraNonce.ExtraNoncePlaceholder.Length + input.SignatureScriptPart2.Length);
-                //stream.WriteBytes(CoinbaseUtils.VarInt(signatureScriptLenght).ToArray());
-
-                //stream.WriteBytes(input.SignatureScriptPart1);
-
-                part1 = stream.ToArray();
-            }
-
-            part1.Take(4).Should().Equal(new Byte[] {0x01, 0x00, 0x00, 0x00});
+            // test the generation transaction final part.
+            generationTransaction.Final.ToHexString().Should().Equal("0d2f6e6f64655374726174756d2f000000000280010b27010000001976a914329035234168b8da5af106ceb20560401236849888ac80f0fa02000000001976a9147d576fbfca48b899dc750167dd2a2a6572fff49588ac00000000");
         }
     }
 }

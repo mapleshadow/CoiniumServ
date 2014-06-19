@@ -31,7 +31,7 @@ namespace Coinium.Common.Extensions
             if (array == null)
                 throw new ArgumentNullException("array");
 
-            return Enumerate<T>(array, start, array.Length);
+            return Enumerate(array, start, array.Length);
         }
 
         public static IEnumerable<T> Enumerate<T>(this T[] array, int start, int count)
@@ -64,6 +64,11 @@ namespace Coinium.Common.Extensions
         public static string Dump(this byte[] array)
         {
             return EnumerableExtensions.Dump(array);
+        }
+
+        public static string ToHexString(this IEnumerable<byte> byteArray)
+        {
+            return ToHexString(byteArray.ToArray());
         }
 
         public static string ToHexString(this byte[] byteArray)
@@ -100,7 +105,7 @@ namespace Coinium.Common.Extensions
             {
                 for (var i = 0; i < 8; i++)
                 {
-                    var value = BitConverter.ToUInt32(bytes, i*4).LittleEndian();
+                    var value = BitConverter.ToUInt32(bytes, i*4).BigEndian();
                     stream.WriteValueU32(value);
                 }
 
@@ -108,7 +113,24 @@ namespace Coinium.Common.Extensions
                 
             }
 
-            return result.ReverseBytes();
+            return result.ReverseBuffer();
+        }
+
+        public static byte[] ReverseBuffer(this byte[] bytes)
+        {
+            byte[] result;
+
+            using (var stream = new MemoryStream())
+            {
+                for (var i = bytes.Length -1 ; i >= 0; i--)
+                {
+                    stream.WriteByte(bytes[i]);
+                }
+
+                result = stream.ToArray();
+            }
+
+            return result;
         }
 
         public static byte[] HexToByteArray(this string str)
@@ -138,7 +160,7 @@ namespace Coinium.Common.Extensions
             int len = end - start;
 
             // Return new array.
-            T[] res = new T[len];
+            var res = new T[len];
             for (int i = 0; i < len; i++)
             {
                 res[i] = source[i + start];

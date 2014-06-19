@@ -63,6 +63,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Coin\Daemon\BlockTemplateTests.cs" />
+    <Compile Include="Common\Extensions\ArrayExtensionsTests.cs" />
+    <Compile Include="Crypto\MerkleRootTests.cs" />
+    <Compile Include="Mining\Share\ShareManagerTests.cs" />
     <Compile Include="Transactions\GenerationTransactionTests.cs" />
     <Compile Include="Extra\ConflictTests.cs" />
     <Compile Include="Coin\AmountTests.cs" />
@@ -72,6 +75,9 @@
     <Compile Include="Mining\Pool\PoolTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Server\Stratum\Notifications\JobTests.cs" />
+    <Compile Include="Transactions\OutputsTests.cs" />
+    <Compile Include="Transactions\Script\SignatureScriptTests.cs" />
+    <Compile Include="Transactions\Utils\TransactionUtilsTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />

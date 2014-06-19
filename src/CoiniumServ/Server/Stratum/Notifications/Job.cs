@@ -41,7 +41,7 @@ namespace Coinium.Server.Stratum.Notifications
         /// Hash of previous block.
         /// </summary>
         [JsonIgnore]
-        public string PreviousBlockHash { get; private set; }
+        public string PreviousBlockHashReversed { get; private set; }
 
         /// <summary>
         /// Initial part of coinbase transaction.
@@ -56,14 +56,6 @@ namespace Coinium.Server.Stratum.Notifications
         /// </summary>
         [JsonIgnore]
         public string CoinbaseFinal { get; private set; }
-
-        /// <summary>
-        /// List of hashes, will be used for calculation of merkle root. 
-        /// <remarks>This is not a list of all transactions, it only contains prepared hashes of steps of merkle tree algorithm. Please read some materials (http://en.wikipedia.org/wiki/Hash_tree) for understanding how merkle trees calculation works. (http://mining.bitcoin.cz/stratum-mining)</remarks>
-        /// <remarks>The coinbase transaction is hashed against the merkle branches to build the final merkle root.</remarks>
-        /// </summary>
-        [JsonIgnore]
-        public List<byte[]> MerkleBranches { get; private set; }
 
         /// <summary>
         /// Coin's block version.
@@ -93,7 +85,7 @@ namespace Coinium.Server.Stratum.Notifications
         /// <summary>
         /// Associated block template.
         /// </summary>
-        public BlockTemplate BlockTemplate { get; private set; }
+        public IBlockTemplate BlockTemplate { get; private set; }
 
         /// <summary>
         /// Associated generation transaction.
@@ -103,49 +95,45 @@ namespace Coinium.Server.Stratum.Notifications
         /// <summary>
         /// Merkle tree associated to blockTemplate transactions.
         /// </summary>
-        public MerkleTree MerkleTree { get; private set; }      
+        public IMerkleTree MerkleTree { get; private set; }
 
         /// <summary>
         /// Creates a new instance of JobNotification.
         /// </summary>
+        /// <param name="id"></param>
         /// <param name="blockTemplate"></param>
         /// <param name="generationTransaction"></param>
-        public Job(UInt64 id, BlockTemplate blockTemplate, GenerationTransaction generationTransaction, MerkleTree merkeTree)
+        /// <param name="merkeTree"></param>
+        public Job(UInt64 id, IBlockTemplate blockTemplate, GenerationTransaction generationTransaction, IMerkleTree merkeTree)
         {
-            this.BlockTemplate = blockTemplate;
-            this.GenerationTransaction = generationTransaction;
-            this.MerkleTree = merkeTree;
+            BlockTemplate = blockTemplate;
+            GenerationTransaction = generationTransaction;
+            MerkleTree = merkeTree;
 
             // init the values.
-            this.Id = id;
-            this.PreviousBlockHash = blockTemplate.PreviousBlockHash.HexToByteArray().ReverseByteOrder().ToHexString();
-            this.CoinbaseInitial = generationTransaction.Part1.ToHexString();
-            this.CoinbaseFinal = generationTransaction.Part2.ToHexString();
-
-            this.MerkleBranches = new List<byte[]>();
-            foreach (var transaction in blockTemplate.Transactions)
-            {
-                this.MerkleBranches.Add(transaction.Data.HexToByteArray());
-            }
+            Id = id;
+            PreviousBlockHashReversed = blockTemplate.PreviousBlockHash.HexToByteArray().ReverseByteOrder().ToHexString();
+            CoinbaseInitial = generationTransaction.Initial.ToHexString();
+            CoinbaseFinal = generationTransaction.Final.ToHexString();
         
-            this.Version = BitConverter.GetBytes(blockTemplate.Version.BigEndian()).ToHexString();
-            this.NetworkDifficulty = blockTemplate.Bits;
-            this.nTime = BitConverter.GetBytes(blockTemplate.CurTime.BigEndian()).ToHexString();
+            Version = BitConverter.GetBytes(blockTemplate.Version.BigEndian()).ToHexString();
+            NetworkDifficulty = blockTemplate.Bits;
+            nTime = BitConverter.GetBytes(blockTemplate.CurTime.BigEndian()).ToHexString();
         }
 
         public IEnumerator<object> GetEnumerator()
         {
             var data = new List<object>
             {
-                this.Id.ToString("x4"),
-                this.PreviousBlockHash,
-                this.CoinbaseInitial,
-                this.CoinbaseFinal,
-                this.MerkleBranches,
-                this.Version,
-                this.NetworkDifficulty,
-                this.nTime,
-                this.CleanJobs
+                Id.ToString("x"),
+                PreviousBlockHashReversed,
+                CoinbaseInitial,
+                CoinbaseFinal,
+                MerkleTree.Branches,
+                Version,
+                NetworkDifficulty,
+                nTime,
+                CleanJobs
             };
 
             return data.GetEnumerator();
