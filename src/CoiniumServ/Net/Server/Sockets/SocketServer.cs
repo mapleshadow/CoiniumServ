@@ -1,32 +1,37 @@
-﻿/*
- *   CoiniumServ - crypto currency pool software - https://github.com/CoiniumServ/CoiniumServ
- *   Copyright (C) 2013 - 2014, Coinium Project - http://www.coinium.org
- *
- *   This program is free software: you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation, either version 3 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+﻿#region License
+// 
+//     CoiniumServ - Crypto Currency Mining Pool Server Software
+//     Copyright (C) 2013 - 2014, CoiniumServ Project - http://www.coinium.org
+//     http://www.coiniumserv.com - https://github.com/CoiniumServ/CoiniumServ
+// 
+//     This software is dual-licensed: you can redistribute it and/or modify
+//     it under the terms of the GNU General Public License as published by
+//     the Free Software Foundation, either version 3 of the License, or
+//     (at your option) any later version.
+// 
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//     GNU General Public License for more details.
+//    
+//     For the terms of this license, see licenses/gpl_v3.txt.
+// 
+//     Alternatively, you can license this software under a commercial
+//     license or white-label it as set out in licenses/commercial.txt.
+// 
+#endregion
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using Coinium.Common.Extensions;
+using CoiniumServ.Utils.Extensions;
 using Serilog;
 
-namespace Coinium.Net.Server.Sockets
+namespace CoiniumServ.Net.Server.Sockets
 {
-    public class SocketServer : IServer, IDisposable
+    public class SocketServer : ISocketServer, IDisposable
     {
         /// <summary>
         /// The IP address of the interface the server binded.
@@ -60,11 +65,13 @@ namespace Coinium.Net.Server.Sockets
 
         // connection event handlers.
         public delegate void ConnectionEventHandler(object sender, ConnectionEventArgs e);
+        public delegate void BannedConnectionEventHandler(object sender, BannedConnectionEventArgs e);
         public delegate void ConnectionDataEventHandler(object sender, ConnectionDataEventArgs e);
 
         // connection events.
-        public event ConnectionEventHandler OnConnect;
-        public event ConnectionEventHandler OnDisconnect;
+        public event ConnectionEventHandler ClientConnected;
+        public event ConnectionEventHandler ClientDisconnected;
+        public event BannedConnectionEventHandler BannedConnection;
         public event ConnectionDataEventHandler DataReceived;
         public event ConnectionDataEventHandler DataSent;
 
@@ -72,19 +79,6 @@ namespace Coinium.Net.Server.Sockets
         /// Is the instance disposed?
         /// </summary>
         private bool _disposed;
-
-        #region server control
-        public virtual bool Start()
-        {
-            throw new NotImplementedException();
-        }
-
-        public virtual bool Stop()
-        {
-            throw new NotImplementedException();
-        }
-
-        #endregion
 
         #region listener & accept callbacks.
 
@@ -120,7 +114,21 @@ namespace Coinium.Net.Server.Sockets
                 Port = port;
 
                 // Start listening for incoming connections.
-                Listener.Listen(10);
+                Listener.Listen(int.MaxValue); // let the maximum amount of accept backlog - we are basically leaving it to OS to determine the value. 
+                                               // by setting the maximum available value, we can make sure that we can handle large amounts of concurrent
+                                               // connection requests (maybe after a server restart).
+                
+                // http://blog.stephencleary.com/2009/05/using-socket-as-server-listening-socket.html
+                // The “backlog” parameter to Socket.Listen is how many connections the OS may accept on behalf of the application. This is not 
+                // the total number of active connections; it is only how many connections will be established if the application “gets behind”. 
+                // Once connections are Accepted, they move out of the backlog queue and no longer “count” against the backlog limit.
+
+                // The .NET docs fail to mention that int.MaxValue can be used to invoke the “dynamic backlog” feature (Windows Server systems only), 
+                // essentially leaving it up to the OS. It is tempting to set this value very high (e.g., always passing int.MaxValue), but this would 
+                // hurt system performance (on non-server machines) by pre-allocating a large amount of scarce resources. This value should be set to a 
+                // reasonable amount (usually between 2 and 5), based on how many connections one is realistically expecting and how quickly they can be 
+                // Accepted.
+
                 IsListening = true;
 
                 // Begin accepting any incoming connections asynchronously.
@@ -130,7 +138,7 @@ namespace Coinium.Net.Server.Sockets
             }
             catch (SocketException exception)
             {
-                Log.Fatal("{0} can not bind on {1}, server shutting down.. Reason: {2}", GetType().Name, bindIP, exception);
+                Log.ForContext<SocketServer>().Fatal("{0} can not bind on {1}, server shutting down.. Reason: {2}", GetType().Name, bindIP, exception);
                 Shutdown();
                 return false;
             }
@@ -148,20 +156,39 @@ namespace Coinium.Net.Server.Sockets
             try
             {
                 var socket = Listener.EndAccept(result); // Finish accepting the incoming connection.
-                var connection = new Connection(this, socket); // Track the connection.
+                var banned = IsBanned(socket);
 
-                lock (ConnectionLock) Connections.Add(connection); // Add the new connection to the activec connections list.
+                if (banned)
+                {
+                    var endpoint = socket.RemoteEndPoint;
+                    socket.Disconnect(true);
+                    OnBannedConnection(new BannedConnectionEventArgs(endpoint));
+                }
+                else
+                {
+                    var connection = new Connection(this, socket); // Track the connection.
 
-                OnClientConnection(new ConnectionEventArgs(connection)); // Raise the OnConnect event.
+                    lock (ConnectionLock)
+                        Connections.Add(connection); // Add the new connection to the active connections list.
 
-                connection.BeginReceive(ReceiveCallback, connection); // Begin receiving on the new connection connection.
-                Listener.BeginAccept(AcceptCallback, null); // Continue receiving other incoming connection asynchronously.
+                    OnClientConnection(new ConnectionEventArgs(connection)); // Raise the ClientConnected event.
+                    connection.BeginReceive(ReceiveCallback, connection); // Begin receiving on the new connection connection.
+                }
             }
-            catch (NullReferenceException) { } // we recive this after issuing server-shutdown, just ignore it.
-            //catch (Exception exception)
-            //{
-            //    Log.Error("Can not accept connection: {0}", exception);
-            //}
+            catch (Exception exception)
+            {
+                Log.ForContext<SocketServer>().Error(exception, "Can not accept connection");
+            }
+            finally
+            {
+                 // no matter we were able to accept last connection request, make sure we continue to listen for new connections.
+                Listener.BeginAccept(AcceptCallback, null);
+            }
+        }
+
+        public virtual bool IsBanned(Socket socket)
+        {
+            return false;
         }
 
         #endregion
@@ -187,22 +214,20 @@ namespace Coinium.Net.Server.Sockets
                     if (connection.IsConnected)
                         connection.BeginReceive(ReceiveCallback, connection);
                     else
-                        Log.Debug("Connection closed:" + connection.Client);
+                        Log.ForContext<SocketServer>().Debug("Connection closed:" + connection.Client);
                 }
                 else
-                {
-                    RemoveConnection(connection, true); // Connection was lost.
-                }
+                    RemoveConnection(connection); // Connection was lost.
             }
             catch (SocketException e)
             {
-                RemoveConnection(connection, true); // An error occured while receiving, connection has disconnected.
-                Log.Error(e, "ReceiveCallback");
+                Log.ForContext<SocketServer>().Debug(e, "ReceiveCallback");
+                RemoveConnection(connection); // An error occured while receiving, connection has disconnected.
             }
             catch (Exception e)
             {
-                RemoveConnection(connection, true); // An error occured while receiving, the connection may have been disconnected.
-                Log.Error(e, "ReceiveCallback");
+                Log.ForContext<SocketServer>().Debug(e, "ReceiveCallback");
+                RemoveConnection(connection); // An error occured while receiving, the connection may have been disconnected.
             }
         }
 
@@ -217,6 +242,9 @@ namespace Coinium.Net.Server.Sockets
 
             if (buffer == null) 
                 throw new ArgumentNullException("buffer");
+
+            if (!connection.IsConnected)
+                return 0;
 
             var totalBytesSent = 0;
             var bytesRemaining = buffer.Length;
@@ -237,13 +265,13 @@ namespace Coinium.Net.Server.Sockets
             }
             catch (SocketException socketException)
             {
-                RemoveConnection(connection, true); // An error occured while sending, connection has disconnected.
-                Log.Error(socketException, "Send");
+                RemoveConnection(connection); // An error occured while sending, connection has disconnected.
+                Log.ForContext<SocketServer>().Error(socketException, "Send");
             }
             catch (Exception e)
             {
-                RemoveConnection(connection, true); // An error occured while sending, it is possible that the connection has a problem.
-                Log.Error(e, "Send");
+                RemoveConnection(connection); // An error occured while sending, it is possible that the connection has a problem.
+                Log.ForContext<SocketServer>().Error(e, "Send");
             }
 
             return totalBytesSent;
@@ -264,30 +292,18 @@ namespace Coinium.Net.Server.Sockets
 
         #region disconnect & shutdown handlers
 
-        public virtual void DisconnectAll()
-        {
-            lock (ConnectionLock)
-            {
-                foreach (var connection in Connections.Cast<Connection>()) // Check if the connection is connected.
-                {
-                    // Disconnect and raise the OnDisconnect event.
-                    connection.Disconnect();
-                    //                    connection.Socket.Disconnect(false);
-                    OnClientDisconnect(new ConnectionEventArgs(connection));
-                }
-
-                Connections.Clear();
-            }
-        }
-
-        private void RemoveConnection(Connection connection, bool raiseEvent)
+        public void RemoveConnection(IConnection connection)
         {
             if (connection == null)
                 return;
 
-            // The whole Server.Disconnect vs Server.RemoveConnection vs Connection.Disconnect is a complete mess.
-            // Trying to modify the code so everything gets cleaned up properly without causing an infinite recursion.
-            connection.Disconnect();
+            lock (connection)
+            {
+                if (connection.IsConnected) // disconnect the client
+                    connection.Socket.Disconnect(true);
+            }
+
+            connection.Client = null;
 
             // Remove the connection from the dictionary and raise the OnDisconnection event.
             lock (ConnectionLock)
@@ -296,13 +312,7 @@ namespace Coinium.Net.Server.Sockets
                     Connections.Remove(connection);
             }
 
-            if (raiseEvent)
-                NotifyRemoveConnection(connection);
-        }
-
-        private void NotifyRemoveConnection(Connection connection)
-        {
-            OnClientDisconnect(new ConnectionEventArgs(connection));
+            OnClientDisconnect(new ConnectionEventArgs(connection)); // raise the ClientDisconnected event.
         }
 
         /// <summary>
@@ -315,7 +325,8 @@ namespace Coinium.Net.Server.Sockets
                 throw new ObjectDisposedException(GetType().Name, "Server has been already disposed.");
 
             // Check if the server is actually listening.
-            if (!IsListening) return;
+            if (!IsListening) 
+                return;
 
             // Close the listener socket.
             if (Listener != null)
@@ -325,14 +336,25 @@ namespace Coinium.Net.Server.Sockets
             }
 
             // Disconnect the clients.
-            foreach (var connection in Connections.ToList()) // use ToList() so we don't get collection modified exception there
-            {
-                connection.Disconnect();
-            }
+            DisconnectAll();
 
             Listener = null;
             IsListening = false;
         }
+
+        public virtual void DisconnectAll()
+        {
+            lock (ConnectionLock)
+            {
+                foreach (var connection in Connections.ToList()) // using ToList() to get a copy in order to prevent any modified collection exceptions.
+                {
+                    RemoveConnection(connection);
+                }
+
+                Connections.Clear();
+            }
+        }
+
 
         #endregion
 
@@ -347,32 +369,57 @@ namespace Coinium.Net.Server.Sockets
 
         #endregion
 
+        #region server control
+        public virtual bool Start()
+        {
+            throw new NotImplementedException();
+        }
+
+        public virtual bool Stop()
+        {
+            throw new NotImplementedException();
+        }
+
+        #endregion
+
         #region events
 
-        protected virtual void OnClientConnection(ConnectionEventArgs e)
+        private void OnClientConnection(ConnectionEventArgs e)
         {
-            var handler = OnConnect;
+            var handler = ClientConnected;
+
             if (handler != null) 
                 handler(this, e);
         }
 
-        protected virtual void OnClientDisconnect(ConnectionEventArgs e)
+        private void OnClientDisconnect(ConnectionEventArgs e)
         {
-            var handler = OnDisconnect;
+            var handler = ClientDisconnected;
+
             if (handler != null) 
                 handler(this, e);
         }
 
-        protected virtual void OnDataReceived(ConnectionDataEventArgs e)
+        private void OnBannedConnection(BannedConnectionEventArgs e)
+        {
+            var handler = BannedConnection;
+
+            if (handler != null)
+                handler(this, e);
+        }
+
+        private void OnDataReceived(ConnectionDataEventArgs e)
         {
             var handler = DataReceived;
+
             if (handler != null) 
                 handler(this, e);
         }
 
-        protected virtual void OnDataSent(ConnectionDataEventArgs e)
+        private void OnDataSent(ConnectionDataEventArgs e)
         {
             var handler = DataSent;
+
             if (handler != null) 
                 handler(this, e);
         }
@@ -386,6 +433,7 @@ namespace Coinium.Net.Server.Sockets
             Dispose(true);
             GC.SuppressFinalize(this);
         }
+
         protected virtual void Dispose(bool disposing)
         {
             if (_disposed) return;

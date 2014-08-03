@@ -1,35 +1,41 @@
-﻿/*
- *   CoiniumServ - crypto currency pool software - https://github.com/CoiniumServ/CoiniumServ
- *   Copyright (C) 2013 - 2014, Coinium Project - http://www.coinium.org
- *
- *   This program is free software: you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation, either version 3 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+﻿#region License
+// 
+//     CoiniumServ - Crypto Currency Mining Pool Server Software
+//     Copyright (C) 2013 - 2014, CoiniumServ Project - http://www.coinium.org
+//     http://www.coiniumserv.com - https://github.com/CoiniumServ/CoiniumServ
+// 
+//     This software is dual-licensed: you can redistribute it and/or modify
+//     it under the terms of the GNU General Public License as published by
+//     the Free Software Foundation, either version 3 of the License, or
+//     (at your option) any later version.
+// 
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//     GNU General Public License for more details.
+//    
+//     For the terms of this license, see licenses/gpl_v3.txt.
+// 
+//     Alternatively, you can license this software under a commercial
+//     license or white-label it as set out in licenses/commercial.txt.
+// 
+#endregion
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
-using Coinium.Coin.Daemon;
-using Coinium.Coin.Daemon.Responses;
-using Coinium.Common.Extensions;
-using Coinium.Crypto;
-using Coinium.Mining.Jobs;
-using Coinium.Server.Stratum.Notifications;
-using Coinium.Transactions;
-using Coinium.Transactions.Script;
-using Should.Fluent;
-using Xunit;
+using CoiniumServ.Cryptology.Algorithms;
+using CoiniumServ.Daemon;
+using CoiniumServ.Daemon.Responses;
+using CoiniumServ.Jobs;
+using CoiniumServ.Payments;
+using CoiniumServ.Server.Mining.Stratum.Notifications;
+using CoiniumServ.Transactions;
+using CoiniumServ.Transactions.Script;
 using Newtonsoft.Json;
 using NSubstitute;
+using Should.Fluent;
+using Xunit;
 
 /* sample data
     previousblockhash: 22a9174d9db64f1919febc9577167764c301b755768b675291f7d34454561e9e previousblockhashreversed: 54561e9e91f7d344768b6752c301b7557716776419febc959db64f1922a9174d
@@ -77,7 +83,7 @@ using NSubstitute;
     ]
  */
 
-namespace Tests.Server.Stratum.Notifications
+namespace CoiniumServ.Tests.Server.Stratum.Notifications
 {
     public class JobTests
     {
@@ -85,9 +91,11 @@ namespace Tests.Server.Stratum.Notifications
         private readonly IDaemonClient _daemonClient;
         private readonly IBlockTemplate _blockTemplate;
         private readonly IExtraNonce _extraNonce;
-        private readonly IMerkleTree _merkleTree;
         private readonly ISignatureScript _signatureScript;
         private readonly IOutputs _outputs;
+        private readonly IJobCounter _jobCounter;
+        private readonly IHashAlgorithm _hashAlgorithm;
+        private readonly IGenerationTransaction _generationTransaction;
 
         public JobTests()
         {
@@ -103,10 +111,6 @@ namespace Tests.Server.Stratum.Notifications
             // extra nonce
             _extraNonce = new ExtraNonce(0);
 
-            // merkle tree
-            var hashList = _blockTemplate.Transactions.Select(transaction => transaction.Hash.HexToByteArray()).ToList();
-            _merkleTree = new MerkleTree(hashList);
-
             // signature script
             _signatureScript = new SignatureScript(
                 _blockTemplate.Height,
@@ -116,33 +120,44 @@ namespace Tests.Server.Stratum.Notifications
                 "/nodeStratum/");
 
             // outputs
-            _outputs = new Outputs(_daemonClient);
+            _outputs = Substitute.For<Outputs>(_daemonClient);
             double blockReward = 5000000000; // the amount rewarded by the block.
 
-            // sample recipient
-            const string recipient = "mrwhWEDnU6dUtHZJ2oBswTpEdbBHgYiMji";
+            // sample reward recipient
+            var rewardsConfig = Substitute.For<IRewardsConfig>();
             var amount = blockReward * 0.01;
             blockReward -= amount;
-            _outputs.AddRecipient(recipient, amount);
+            var rewards = new Dictionary<string, float> { {"mrwhWEDnU6dUtHZJ2oBswTpEdbBHgYiMji", (float) amount} };
+
+            rewardsConfig.GetEnumerator().Returns(rewards.GetEnumerator());
+            foreach (var pair in rewards)
+            {
+                _outputs.AddRecipient(pair.Key, pair.Value);
+            }
 
             // sample pool wallet
-            const string poolWallet = "mk8JqN1kNWju8o3DXEijiJyn7iqkwktAWq";
-            _outputs.AddPool(poolWallet, blockReward);
+            var walletConfig = Substitute.For<IWalletConfig>();
+            walletConfig.Adress.Returns("mk8JqN1kNWju8o3DXEijiJyn7iqkwktAWq");
+            _outputs.AddPoolWallet(walletConfig.Adress, blockReward);
+
+            // job counter
+            _jobCounter = Substitute.For<JobCounter>();
+
+            // generation transaction.
+            _generationTransaction = new GenerationTransaction(_extraNonce, _daemonClient, _blockTemplate, walletConfig, rewardsConfig);
+            _generationTransaction.Inputs.First().SignatureScript = _signatureScript;
+            _generationTransaction.Outputs = _outputs;
+            _generationTransaction.Create();     
+
+            // hash algorithm
+            _hashAlgorithm = Substitute.For<Scrypt>();
         }
 
         [Fact]
         public void TestJob()
         {
-            var jobCounter = Substitute.For<JobCounter>();
-
-            // create the transaction.
-            var generationTransaction = new GenerationTransaction(_extraNonce, _daemonClient, _blockTemplate);
-            generationTransaction.Inputs.First().SignatureScript = _signatureScript;
-            generationTransaction.Outputs = _outputs;
-            generationTransaction.Create();             
-
             // test the output.
-            var job = new Job(jobCounter.Next(), _blockTemplate, generationTransaction, _merkleTree)
+            var job = new Job(_jobCounter.Next(), _hashAlgorithm, _blockTemplate, _generationTransaction)
             {
                 CleanJobs = true
             };
@@ -162,7 +177,7 @@ namespace Tests.Server.Stratum.Notifications
             job.Version.Should().Equal("00000002");
 
             // test the bits (encoded network difficulty)
-            job.NetworkDifficulty.Should().Equal("1d2bd7c3");
+            job.EncodedDifficulty.Should().Equal("1d2bd7c3");
 
             // test the current time
             job.nTime.Should().Equal("539ee666");

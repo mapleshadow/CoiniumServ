@@ -1,35 +1,41 @@
-﻿/*
- *   CoiniumServ - crypto currency pool software - https://github.com/CoiniumServ/CoiniumServ
- *   Copyright (C) 2013 - 2014, Coinium Project - http://www.coinium.org
- *
- *   This program is free software: you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation, either version 3 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+﻿#region License
+// 
+//     CoiniumServ - Crypto Currency Mining Pool Server Software
+//     Copyright (C) 2013 - 2014, CoiniumServ Project - http://www.coinium.org
+//     http://www.coiniumserv.com - https://github.com/CoiniumServ/CoiniumServ
+// 
+//     This software is dual-licensed: you can redistribute it and/or modify
+//     it under the terms of the GNU General Public License as published by
+//     the Free Software Foundation, either version 3 of the License, or
+//     (at your option) any later version.
+// 
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//     GNU General Public License for more details.
+//    
+//     For the terms of this license, see licenses/gpl_v3.txt.
+// 
+//     Alternatively, you can license this software under a commercial
+//     license or white-label it as set out in licenses/commercial.txt.
+// 
+#endregion
 
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Coinium.Coin.Daemon;
-using Coinium.Coin.Daemon.Responses;
-using Coinium.Common.Helpers.Time;
-using Coinium.Crypto;
-using Coinium.Mining.Jobs;
-using Coinium.Transactions.Coinbase;
-using Coinium.Transactions.Script;
+using CoiniumServ.Coin.Coinbase;
+using CoiniumServ.Cryptology;
+using CoiniumServ.Daemon;
+using CoiniumServ.Daemon.Responses;
+using CoiniumServ.Jobs;
+using CoiniumServ.Payments;
+using CoiniumServ.Transactions.Script;
+using CoiniumServ.Utils.Helpers.Time;
 using Gibbed.IO;
 
-namespace Coinium.Transactions
+namespace CoiniumServ.Transactions
 {
     /// <summary>
     /// A generation transaction.
@@ -108,21 +114,24 @@ namespace Coinium.Transactions
         /// <param name="extraNonce">The extra nonce.</param>
         /// <param name="daemonClient">The daemon client.</param>
         /// <param name="blockTemplate">The block template.</param>
+        /// <param name="rewardsConfig"></param>
         /// <param name="supportTxMessages">if set to <c>true</c> [support tx messages].</param>
         /// <remarks>
         /// Reference implementations:
         /// https://github.com/zone117x/node-stratum-pool/blob/b24151729d77e0439e092fe3a1cdbba71ca5d12e/lib/transactions.js
         /// https://github.com/Crypto-Expert/stratum-mining/blob/master/lib/coinbasetx.py
         /// </remarks>
-        public GenerationTransaction(IExtraNonce extraNonce, IDaemonClient daemonClient, IBlockTemplate blockTemplate, bool supportTxMessages = false)
+        public GenerationTransaction(IExtraNonce extraNonce, IDaemonClient daemonClient, IBlockTemplate blockTemplate, IWalletConfig walletConfig, IRewardsConfig rewardsConfig, bool supportTxMessages = false)
         {
-            DaemonClient = daemonClient;
+            // TODO: we need a whole refactoring here.
+            // we should use DI and it shouldn't really require daemonClient connection to function.
+
             BlockTemplate = blockTemplate;
             ExtraNonce = extraNonce;
             SupportTxMessages = supportTxMessages;
 
             Version = (UInt32)(supportTxMessages ? 2 : 1);
-            Message = CoinbaseUtils.SerializeString("https://github.com/CoiniumServ/CoiniumServ");
+            Message = Serializers.SerializeString("https://github.com/CoiniumServ/CoiniumServ");
             LockTime = 0;
 
             // transaction inputs
@@ -151,15 +160,8 @@ namespace Coinium.Transactions
 
             double blockReward = BlockTemplate.Coinbasevalue; // the amount rewarded by the block.
 
-            const string poolWallet = "n3Mvrshbf4fMoHzWZkDVbhhx4BLZCcU9oY"; // pool's central wallet address.
-
-            var rewardRecipients = new Dictionary<string, double> // reward recipients addresses.
-            {
-                {"myxWybbhUkGzGF7yaf2QVNx3hh3HWTya5t", 1} // pool fee
-            };
-
             // generate output transactions for recipients (set in config).
-            foreach (var pair in rewardRecipients)
+            foreach (var pair in rewardsConfig)
             {
                 var amount = blockReward * pair.Value / 100; // calculate the amount he recieves based on the percent of his shares.
                 blockReward -= amount;
@@ -168,7 +170,7 @@ namespace Coinium.Transactions
             }
 
             // send the remaining coins to pool's central wallet.
-            Outputs.AddPool(poolWallet, blockReward); 
+            Outputs.AddPoolWallet(walletConfig.Adress, blockReward); 
         }
 
         public void Create()
@@ -181,13 +183,13 @@ namespace Coinium.Transactions
                 // for proof-of-stake coins we need here timestamp - https://github.com/zone117x/node-stratum-pool/blob/b24151729d77e0439e092fe3a1cdbba71ca5d12e/lib/transactions.js#L210
 
                 // write transaction input.
-                stream.WriteBytes(CoinbaseUtils.VarInt(InputsCount));
+                stream.WriteBytes(Serializers.VarInt(InputsCount));
                 stream.WriteBytes(Inputs.First().PreviousOutput.Hash.Bytes);
                 stream.WriteValueU32(Inputs.First().PreviousOutput.Index.LittleEndian());
 
                 // write signature script lenght
                 var signatureScriptLenght = (UInt32)(Inputs.First().SignatureScript.Initial.Length + ExtraNonce.ExtraNoncePlaceholder.Length + Inputs.First().SignatureScript.Final.Length);
-                stream.WriteBytes(CoinbaseUtils.VarInt(signatureScriptLenght).ToArray());
+                stream.WriteBytes(Serializers.VarInt(signatureScriptLenght).ToArray());
 
                 stream.WriteBytes(Inputs.First().SignatureScript.Initial);
 

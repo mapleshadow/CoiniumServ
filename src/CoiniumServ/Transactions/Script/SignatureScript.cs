@@ -1,29 +1,34 @@
-﻿/*
- *   CoiniumServ - crypto currency pool software - https://github.com/CoiniumServ/CoiniumServ
- *   Copyright (C) 2013 - 2014, Coinium Project - http://www.coinium.org
- *
- *   This program is free software: you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation, either version 3 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+﻿#region License
+// 
+//     CoiniumServ - Crypto Currency Mining Pool Server Software
+//     Copyright (C) 2013 - 2014, CoiniumServ Project - http://www.coinium.org
+//     http://www.coiniumserv.com - https://github.com/CoiniumServ/CoiniumServ
+// 
+//     This software is dual-licensed: you can redistribute it and/or modify
+//     it under the terms of the GNU General Public License as published by
+//     the Free Software Foundation, either version 3 of the License, or
+//     (at your option) any later version.
+// 
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//     GNU General Public License for more details.
+//    
+//     For the terms of this license, see licenses/gpl_v3.txt.
+// 
+//     Alternatively, you can license this software under a commercial
+//     license or white-label it as set out in licenses/commercial.txt.
+// 
+#endregion
 
 using System;
 using System.IO;
-using Coinium.Common.Extensions;
-using Coinium.Transactions.Coinbase;
-using Coinium.Transactions.Utils;
+using CoiniumServ.Coin.Coinbase;
+using CoiniumServ.Transactions.Utils;
+using CoiniumServ.Utils.Extensions;
 using Gibbed.IO;
 
-namespace Coinium.Transactions.Script
+namespace CoiniumServ.Transactions.Script
 {
     public class SignatureScript : ISignatureScript
     {
@@ -43,7 +48,7 @@ namespace Coinium.Transactions.Script
             // The txin's prevout script is an arbitrary byte array (it doesn't have to be a valid script, though this is commonly 
             // done anyway) of 2 to 100 bytes. It has to start with a correct push of the block height (see BIP34).
 
-            var serializedBlockHeight = CoinbaseUtils.SerializeNumber(blockHeight);
+            var serializedBlockHeight = Serializers.SerializeNumber(blockHeight);
             var serializedUnixTime = TransactionUtils.GetSerializedUnixDateTime(unixTime);
 
             using (var stream = new MemoryStream())
@@ -56,7 +61,7 @@ namespace Coinium.Transactions.Script
                 Initial = stream.ToArray();
             }
 
-            Final = CoinbaseUtils.SerializeString(signature);
+            Final = Serializers.SerializeString(signature);
         }
     }
 }
